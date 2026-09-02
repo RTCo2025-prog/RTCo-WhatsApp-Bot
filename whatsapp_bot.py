@@ -2,11 +2,12 @@
 نظام السكرتيرة الذكية على واتساب - شركة البرج المتألق
 المزود: Green-API
 الميزات الشاملة:
-- رد فوري ذكي على الاستفسارات النصية بلهجة عراقية راقية.
-- رد تلقائي واعتذار عند ورود أي مكالمة صوتية أو بصمة صوتية (Voice Note).
+- رد فوري ذكي على الاستفسارات النصية بلهجة عراقية راقية وذاكرة سياق.
+- معالجة واعتذار فوري للمكالمات الصوتية الواردة/الفائتة بكافة صيغ الـ Webhook.
+- رد فوري واعتذار عند استلام أي بصمة أو رسالة صوتية (Voice Note).
 - إشعار فوري لهاتف الإدارة عند وجود مكالمة أو رسالة صوتية.
 - قائمة أقسام الشركة ومعلومات التواصل عبر الأرقام (0 إلى 6).
-- تقرير إداري ملخص بعد 15 دقيقة خمول يرسل للإدارة مع رابط المحادثة.
+- تقرير إداري ملخص بعد 15 دقيقة خمول يرسل للإدارة مع رابط المحادثة المباشر.
 """
 
 import os
@@ -26,7 +27,7 @@ GROQ_API_KEY = "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"
 ID_INSTANCE = "710522726783"
 API_TOKEN_INSTANCE = "89eb56761417424194ea3f426398d1e4f6d708a5d22e4e46b7"
 
-# رقم هاتف الإدارة لاستلام التقارير والإشعارات
+# رقم هاتف الإدارة لاستلام التقارير والإشعارات (مع الرمز الدولي و @c.us)
 ADMIN_CHAT_ID = "9647805509298@c.us"
 
 client = Groq(api_key=GROQ_API_KEY)
@@ -73,7 +74,6 @@ def get_voice_apology_text(client_name: str, is_call: bool = True) -> str:
         "☎️ أو يمكنك الاتصال هاتفياً ومباشرة بكادر الشركة عبر الأرقام التالية:\n"
         "▫️ 009647868006699\n"
         "▫️ 009647737006699\n"
-        "▫️ هاتف الإدارة: 07805509298"
         + PERSISTENT_FOOTER
     )
 
@@ -212,27 +212,30 @@ def health():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
-    type_webhook = data.get("typeWebhook")
+    type_webhook = str(data.get("typeWebhook", ""))
 
     # -------------------------------------------------------------
-    # أ) التعامل مع المكالمات الواردة (Incoming Calls)
+    # أ) معالجة المكالمات الواردة والفائتة بجميع هياكلها المحتملة
     # -------------------------------------------------------------
-    if type_webhook == "incomingCall":
-        sender_data = data.get("senderData", {})
-        chat_id = sender_data.get("chatId", "")
-        caller_name = sender_data.get("senderName", "أستاذنا الفاضل")
+    if "call" in type_webhook.lower():
+        sender_data = data.get("senderData", {}) or {}
+        chat_id = sender_data.get("chatId") or data.get("chatId", "")
+        caller_name = sender_data.get("senderName") or "أستاذنا الفاضل"
 
-        if chat_id and "@g.us" not in chat_id:
-            clean_num = chat_id.split("@")[0]
+        if not chat_id and "from" in data:
+            chat_id = data.get("from")
+
+        if chat_id and "@g.us" not in str(chat_id):
+            clean_num = str(chat_id).split("@")[0]
 
             # 1. إرسال الاعتذار التلقائي للمتصل
             reply_call = get_voice_apology_text(caller_name, is_call=True)
             send_whatsapp_message(chat_id, reply_call)
 
-            # 2. إشعار فوري لإدارة الشركة
+            # 2. إشعار فوري لإدارة الشركة بوجود مكالمة
             if chat_id != ADMIN_CHAT_ID:
                 admin_alert = (
-                    "🔔 *تنبيه: مكالمة صوتية واردة*\n\n"
+                    "🔔 *تنبيه: مكالمة صوتية واردة لم يُرد عليها*\n\n"
                     f"👤 *المتصل:* {caller_name}\n"
                     f"📱 *الرقم:* +{clean_num}\n"
                     "ℹ️ تم إرسال رسالة توضيحية آلية فوراً للمتصل مع أرقام الهواتف الرسمية.\n\n"
@@ -240,31 +243,31 @@ def webhook():
                 )
                 send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
 
-        return jsonify({"status": "call handled"}), 200
+        return jsonify({"status": "call processed"}), 200
 
     # -------------------------------------------------------------
-    # ب) التعامل مع الرسائل الواردة (النصية والصوتية)
+    # ب) معالجة الرسائل الواردة (النصية والصوتية)
     # -------------------------------------------------------------
     if type_webhook == "incomingMessageReceived":
-        message_data = data.get("messageData", {})
+        message_data = data.get("messageData", {}) or {}
         type_message = message_data.get("typeMessage")
-        sender_data = data.get("senderData", {})
+        sender_data = data.get("senderData", {}) or {}
         
         chat_id = sender_data.get("chatId", "")
         sender_name = sender_data.get("senderName", "أستاذنا الفاضل")
 
-        if "@g.us" in chat_id or not chat_id:
+        if "@g.us" in str(chat_id) or not chat_id:
             return jsonify({"status": "ignored"}), 200
 
-        # --- التعامل مع البصمات والرسائل الصوتية الواردة ---
+        # 1. التعامل مع البصمات والرسائل الصوتية الواردة
         if type_message in ["audioMessage", "voiceMessage"]:
-            clean_num = chat_id.split("@")[0]
+            clean_num = str(chat_id).split("@")[0]
             
-            # 1. إرسال رسالة الاعتذار التلقائية للبصمة الصوتية
+            # إرسال الاعتذار الآلي للبصمة الصوتية
             reply_audio = get_voice_apology_text(sender_name, is_call=False)
             send_whatsapp_message(chat_id, reply_audio)
 
-            # 2. إشعار الإدارة بوجود رسالة صوتية من عميل
+            # إشعار الإدارة بوجود بصمة صوتية
             if chat_id != ADMIN_CHAT_ID:
                 admin_alert = (
                     "🎙️ *تنبيه: استلام رسالة / بصمة صوتية*\n\n"
@@ -277,7 +280,7 @@ def webhook():
 
             return jsonify({"status": "voice note handled"}), 200
 
-        # --- استخراج الرسائل النصية ---
+        # 2. استخراج الرسائل النصية
         text_message = ""
         if type_message == "textMessage":
             text_message = message_data.get("textMessageData", {}).get("textMessage", "").strip()
@@ -295,7 +298,7 @@ def webhook():
 
         lower_msg = text_message.lower()
 
-        # فحص القوائم المباشرة (0)
+        # فحص القوائم المباشرة (0 أو الأقسام)
         if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
             send_whatsapp_message(chat_id, COMPANY_MENU_TEXT)
             return jsonify({"status": "menu sent"}), 200
@@ -313,7 +316,7 @@ def webhook():
             send_whatsapp_message(chat_id, dept_responses[lower_msg] + PERSISTENT_FOOTER)
             return jsonify({"status": "dept sent"}), 200
 
-        # معالجة الذكاء الاصطناعي
+        # المعالجة عبر الذكاء الاصطناعي مع حفظ السياق
         is_first = len(user_conversations[chat_id]) == 0
         user_conversations[chat_id].append({"role": "user", "content": text_message})
         if len(user_conversations[chat_id]) > 8:
