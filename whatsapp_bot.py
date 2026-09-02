@@ -1,52 +1,54 @@
 """
 نظام السكرتيرة الذكية على واتساب - شركة البرج المتألق
-الملف: whatsapp_bot.py
-الميزات: الذاكرة التفاعلية + القائمة المدمجة + تقرير بعد 15 دقيقة خمول مع رابط مراسلة مباشر
+المزود: Green-API
+الميزات:
+- حوار ذكي مباشر بلهجة عراقية راقية مع ذاكرة سياق.
+- قائمة أقسام ومعلومات اتصال بديهية (بالضغط على 0 أو الأرقام 1-6).
+- ذيل توجيهي في كل رسالة لعرض الأقسام.
+- تقرير إداري ملخص بعد 15 دقيقة خمول يرسل لواتساب الإدارة مع رابط المحادثة.
 """
 
 import os
 import re
-import threading
 import time
-from flask import Flask, request
+import threading
+import requests
+from flask import Flask, request, jsonify
 from groq import Groq
-from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client as TwilioClient
 
 app = Flask(__name__)
 
 # =============================================================
-# 1. المفاتيح وإعدادات الاتصال
+# 1. مفاتيح الربط والإعدادات
 # =============================================================
-GROQ_API_KEY = "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".strip()
+GROQ_API_KEY = "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"
+ID_INSTANCE = "710522726783"
+API_TOKEN_INSTANCE = "89eb56761417424194ea3f426398d1e4f6d708a5d22e4e46b7"
 
-# بيانات حساب Twilio الخاص بك
-TWILIO_ACCOUNT_SID = "AC_ضع_account_sid_هنا"
-TWILIO_AUTH_TOKEN = "ضع_auth_token_هنا"
+# رقم هاتف الإدارة لاستلام التقارير (بالصيغة الدولية مع @c.us)
+ADMIN_CHAT_ID = "9647805509298@c.us"
 
-# رقم هاتف الإدارة لاستلام التقارير (بالصيغة الدولية مع +)
-ADMIN_WHATSAPP_NUMBER = "whatsapp:+9647805509298"
+client = Groq(api_key=GROQ_API_KEY)
 
-groq_client = Groq(api_key=GROQ_API_KEY)
-twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+GREEN_API_URL = f"https://api.green-api.com/waInstance{ID_INSTANCE}"
 
-# هياكل تخزين المحادثات والمؤقتات بالذاكرة
-user_conversations = {}    # {phone_number: [ {role, content}, ... ]}
-user_last_active = {}      # {phone_number: timestamp}
-user_meta = {}             # {phone_number: {"name": str, "bot_number": str}}
+# هياكل الذاكرة والمؤقتات
+user_conversations = {}   # {chat_id: [{"role": ..., "content": ...}]}
+user_last_active = {}     # {chat_id: timestamp}
+user_meta = {}            # {chat_id: {"name": str, "phone": str}}
 
 # =============================================================
-# 2. نصوص وهوية السكرتيرة الذكية (System Prompt)
+# 2. الهوية التوجيهية ونصوص الأقسام
 # =============================================================
 SYSTEM_INSTRUCTION = """
 أنتِ السكرتيرة التنفيذية والمستشارة الفنية لشركة "البرج المتألق للمقاولات العامة والاستثمارات العقارية والتجارة العامة والنقل العام".
 أسلوبكِ: أنثوي، لبق، راقٍ، ومهذب جداً بلهجة عراقية محترمة وبيئة أعمال راقية (مثل: "يا أهلاً وسهلاً بحضرتك"، "تدلل/تدللين"، "يسعدنا نخدمك").
 
 قواعد الردود على واتساب:
-1. أجيبي مباشرة عن سؤال العميل باللغة العربية مع تقديم تفاصيل هندسية وفنية مفيدة.
-2. لا تضعي أرقام هواتف أو إيميل أو روابط في نهاية الأجوبة العادية؛ لأن العميل لديه خيار إرسال رقم 0 لعرض القائمة.
-3. اذكري أرقام الهواتف فقط إذا طلبها الزبون بصراحة.
-4. الحوار مستمر ومترابط؛ إذا سأل الزبون سؤالاً إضافياً، اربطي الجواب مباشرة بالسياق السابق دون إعادة ترحيب.
+1. أجيبي مباشرة عن سؤال العميل باللغة العربية مع تقديم تفاصيل هندسية وفنية مفيدة وموجزة.
+2. لا تضعي أرقام هواتف أو إيميل أو روابط في نهاية الأجوبة العادية لأن العميل لديه خيار إرسال رقم 0 لعرض القائمة.
+3. اذكري أرقام التواصل كتابياً فقط إذا طلبها الزبون بصراحة.
+4. الحوار مستمر ومترابط؛ اربطي الإجابات التكميلية بالسياق السابق دون إعادة ترحيب.
 """
 
 COMPANY_MENU_TEXT = (
@@ -63,8 +65,20 @@ COMPANY_MENU_TEXT = (
 PERSISTENT_FOOTER = "\n\n─────────────\n📋 _لعرض أقسام الشركة ومعلومات التواصل، أرسل رقم *0*_"
 
 # =============================================================
-# 3. دوال المعالجة واختيار النماذج
+# 3. دوال التواصل مع Green-API و Groq
 # =============================================================
+def send_whatsapp_message(chat_id: str, message: str):
+    url = f"{GREEN_API_URL}/sendMessage/{API_TOKEN_INSTANCE}"
+    payload = {
+        "chatId": chat_id,
+        "message": message
+    }
+    headers = {'Content-Type': 'application/json'}
+    try:
+        requests.post(url, json=payload, headers=headers, timeout=10)
+    except Exception as e:
+        print(f"Error sending WhatsApp message: {e}")
+
 def clean_think_tags(text: str) -> str:
     if not text:
         return ""
@@ -74,7 +88,7 @@ def clean_think_tags(text: str) -> str:
 
 def get_available_models():
     try:
-        models_data = groq_client.models.list().data
+        models_data = client.models.list().data
         valid_models = []
         for m in models_data:
             mid = m.id.lower()
@@ -91,7 +105,7 @@ def generate_ai_reply(messages_payload):
     models = get_available_models()
     for model_name in models:
         try:
-            completion = groq_client.chat.completions.create(
+            completion = client.chat.completions.create(
                 model=model_name,
                 messages=messages_payload,
                 temperature=0.4,
@@ -106,38 +120,34 @@ def generate_ai_reply(messages_payload):
     return "يا أهلاً بحضرتك، شلون أگدر أساعدك اليوم في شركة البرج المتألق؟"
 
 # =============================================================
-# 4. نظام المراقبة وإرسال التقارير بعد 15 دقيقة خمول
+# 4. مراقبة الـ 15 دقيقة خمول وتوليد التقارير للإدارة
 # =============================================================
 def background_inactivity_checker():
-    """خيط خلفي يفحص الجلسات التي توقفت لأكثر من 15 دقيقة (900 ثانية)"""
     while True:
         time.sleep(30)
         current_time = time.time()
-        timeout_users = []
+        timeout_chats = []
 
-        for phone, last_time in list(user_last_active.items()):
+        for chat_id, last_time in list(user_last_active.items()):
             if current_time - last_time >= 900:  # 15 دقيقة خمول
-                timeout_users.append(phone)
+                timeout_chats.append(chat_id)
 
-        for phone in timeout_users:
-            history = user_conversations.get(phone, [])
-            meta = user_meta.get(phone, {})
-            
-            # حذف المستخدم من المراقبة حتى لا يتكرر التقرير
-            user_last_active.pop(phone, None)
-            user_conversations.pop(phone, None)
-            user_meta.pop(phone, None)
+        for chat_id in timeout_chats:
+            history = user_conversations.get(chat_id, [])
+            meta = user_meta.get(chat_id, {})
+
+            user_last_active.pop(chat_id, None)
+            user_conversations.pop(chat_id, None)
+            user_meta.pop(chat_id, None)
 
             if not history:
                 continue
 
-            # تجميع نص المحادثة
             dialog_text = ""
             for msg in history:
                 sender = "الزبون" if msg["role"] == "user" else "السكرتيرة"
                 dialog_text += f"{sender}: {msg['content']}\n"
 
-            # استخراج ملخص تنفيذي عبر الذكاء الاصطناعي
             summary_prompt = f"""
 قم بتحليل محادثة خدمة العملاء التالية على واتساب لشركة 'البرج المتألق':
 {dialog_text}
@@ -149,7 +159,7 @@ def background_inactivity_checker():
 """
             try:
                 models = get_available_models()
-                summary_res = groq_client.chat.completions.create(
+                summary_res = client.chat.completions.create(
                     model=models[0],
                     messages=[{"role": "user", "content": summary_prompt}],
                     temperature=0.3,
@@ -157,12 +167,11 @@ def background_inactivity_checker():
                 )
                 executive_summary = clean_think_tags(summary_res.choices[0].message.content)
             except Exception:
-                executive_summary = "تمت الجلسة (يرجى الاطلاع على نص المحادثة المرفق أدناه)."
+                executive_summary = "تمت الجلسة بنجاح (يرجى مراجعة نص المحادثة المرفق أدناه)."
 
-            clean_num = phone.replace("whatsapp:", "").replace("+", "")
+            clean_num = chat_id.split("@")[0]
             wa_link = f"https://wa.me/{clean_num}"
             client_name = meta.get("name", "زبون واتساب")
-            bot_phone = meta.get("bot_number", "")
 
             admin_report = (
                 f"📊 *تقرير جلسة واتساب مكتملة (بعد 15 دقيقة خمول)*\n\n"
@@ -175,126 +184,94 @@ def background_inactivity_checker():
                 f"👉 *مراسلة العميل مباشرة:*\n{wa_link}"
             )
 
-            # إرسال التقرير لرقم الإدارة عبر Twilio
-            try:
-                if phone != ADMIN_WHATSAPP_NUMBER and bot_phone:
-                    twilio_client.messages.create(
-                        body=admin_report,
-                        from_=bot_phone,
-                        to=ADMIN_WHATSAPP_NUMBER
-                    )
-            except Exception as e:
-                print(f"Error sending admin report: {e}")
+            if chat_id != ADMIN_CHAT_ID:
+                send_whatsapp_message(ADMIN_CHAT_ID, admin_report)
 
-# تشغيل خيط المراقبة في الخلفية
 threading.Thread(target=background_inactivity_checker, daemon=True).start()
 
 # =============================================================
-# 5. السيرفر ونقاط الاستقبال (Webhooks)
+# 5. السيرفر واستقبال الرسائل (Webhook)
 # =============================================================
 @app.route("/", methods=["GET"])
 def health():
-    return "RTCo WhatsApp Secretary is Live 24/7", 200
+    return "RTCo WhatsApp Bot is Live 24/7", 200
 
 @app.route("/webhook", methods=["POST"])
-def whatsapp_webhook():
-    incoming_msg = request.values.get("Body", "").strip()
-    sender_whatsapp = request.values.get("From", "")
-    bot_whatsapp = request.values.get("To", "")
-    profile_name = request.values.get("ProfileName", "زبون واتساب")
+def webhook():
+    data = request.json or {}
+    type_webhook = data.get("typeWebhook")
 
-    if not incoming_msg:
-        return str(MessagingResponse())
-
-    # تحديث بيانات المستخدم ووقت آخر نشاط
-    user_last_active[sender_whatsapp] = time.time()
-    user_meta[sender_whatsapp] = {
-        "name": profile_name,
-        "bot_number": bot_whatsapp
-    }
-
-    if sender_whatsapp not in user_conversations:
-        user_conversations[sender_whatsapp] = []
-
-    reply_text = ""
-    lower_msg = incoming_msg.lower()
-
-    # فحص الرسائل التوجيهية والأقسام
-    if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
-        reply_text = COMPANY_MENU_TEXT
-
-    elif lower_msg == "1":
-        reply_text = (
-            "🏗️ *قسم المقاولات العامة والإنشاءات:*\n\n"
-            "• تنفيذ الهياكل الإنشائية والخرسانية بدقة هندسية عالية.\n"
-            "• تشطيبات متكاملة ديلوكس (تسليم مفتاح).\n"
-            "• تصاميم معمارية وديكورات داخلية حديثة.\n"
-            "• إشراف كادر هندسي معتمد مع ضمان شامل للجودة.\n\n"
-            "💬 _تگدر تكتب تفاصيل مشروعك أو مساحته هنا وسأجيبك فوراً._"
-        )
-    elif lower_msg == "2":
-        reply_text = (
-            "🏢 *قسم الاستثمارات والتطوير العقاري:*\n\n"
-            "• دراسات جدوى واستشارات عقارية استثمارية متخصصة.\n"
-            "• فرص عقارية وأراضٍ ممتازة تحقق أعلى عائد وقيمة مضافة.\n"
-            "• إدارة وتطوير وتسويق المشاريع العقارية."
-        )
-    elif lower_msg == "3":
-        reply_text = (
-            "📦 *قسم التجارة العامة والتوريدات:*\n\n"
-            "• استيراد وتأمين المواد الإنشائية ومستلزمات البناء.\n"
-            "• صفقات تجارية وسلاسل إمداد موثوقة للشركات والمشاريع.\n"
-            "• أسعار تنافسية مطابقة للمواصفات القياسية المعتمدة."
-        )
-    elif lower_msg == "4":
-        reply_text = (
-            "🚚 *قسم النقل العام والخدمات اللوجستية:*\n\n"
-            "• نقل بري آمن ومنتظم للمواد والبضائع بين المحافظات.\n"
-            "• إدارة الأساطيل وتأمين المسارات اللوجستية بأمان.\n"
-            "• التزام تام بالمواعيد وسرعة في التسليم."
-        )
-    elif lower_msg == "5":
-        reply_text = (
-            "📞 *أرقام الهواتف وقنوات الاتصال المباشرة:*\n\n"
-            "▫️ هاتف: 009647868006699\n"
-            "▫️ هاتف: 009647737006699\n"
-            "▫️ هاتف الإدارة: 07805509298\n"
-            "▫️ البريد الإلكتروني: RTCo2025@gmail.com\n\n"
-            "كادر الشركة بخدمتكم دائماً."
-        )
-    elif lower_msg == "6":
-        reply_text = (
-            "🌐 *منصاتنا وموقعنا الرسمي:*\n\n"
-            "• الموقع الإلكتروني: www.alburjmutalaliq.co\n"
-            "• تيليجرام: https://t.me/RTCo2025\n"
-            "• إنستغرام وتيك توك وفيسبوك: @rtco2025"
-        )
-    else:
-        # إذا كانت المحادثة تبدأ بكلمات تحية لأول مرة
-        is_first_interaction = len(user_conversations[sender_whatsapp]) == 0
+    # معالجة الرسائل الواردة فقط
+    if type_webhook == "incomingMessageReceived":
+        message_data = data.get("messageData", {})
+        type_message = message_data.get("typeMessage")
+        sender_data = data.get("senderData", {})
         
-        # إضافة الرسالة للذاكرة
-        user_conversations[sender_whatsapp].append({"role": "user", "content": incoming_msg})
-        if len(user_conversations[sender_whatsapp]) > 8:
-            user_conversations[sender_whatsapp] = user_conversations[sender_whatsapp][-8:]
+        chat_id = sender_data.get("chatId", "")
+        sender_name = sender_data.get("senderName", "زبون")
 
-        payload = [{"role": "system", "content": SYSTEM_INSTRUCTION}] + user_conversations[sender_whatsapp]
+        # تجنب معالجة رسائل المجموعات أو إشعارات النظام
+        if "@g.us" in chat_id or not chat_id:
+            return jsonify({"status": "ignored"}), 200
+
+        text_message = ""
+        if type_message == "textMessage":
+            text_message = message_data.get("textMessageData", {}).get("textMessage", "").strip()
+        elif type_message == "extendedTextMessage":
+            text_message = message_data.get("extendedTextMessageData", {}).get("text", "").strip()
+
+        if not text_message:
+            return jsonify({"status": "no text"}), 200
+
+        # تحديث وقت النشاط والبيانات
+        user_last_active[chat_id] = time.time()
+        user_meta[chat_id] = {"name": sender_name, "phone": chat_id}
+
+        if chat_id not in user_conversations:
+            user_conversations[chat_id] = []
+
+        lower_msg = text_message.lower()
+
+        # فحص القوائم
+        if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
+            send_whatsapp_message(chat_id, COMPANY_MENU_TEXT)
+            return jsonify({"status": "menu sent"}), 200
+
+        dept_responses = {
+            "1": "🏗️ *قسم المقاولات العامة والإنشاءات:*\n\n• تنفيذ الهياكل الإنشائية والخرسانية بدقة هندسية عالية.\n• تشطيبات متكاملة ديلوكس (تسليم مفتاح).\n• تصاميم معمارية وديكورات حديثة.\n• إشراف كادر هندسي معتمد وضمان شامل للجودة.\n\n💬 _تفضل بكتابة تفاصيل مشروعك أو مساحته وسأجيبك فوراً._",
+            "2": "🏢 *قسم الاستثمارات والتطوير العقاري:*\n\n• دراسات جدوى واستشارات عقارية استثمارية متخصصة.\n• فرص عقارية وأراضٍ ممتازة تحقق أعلى عائد استثماري.\n• إدارة وتطوير وتسويق المشاريع العقارية.",
+            "3": "📦 *قسم التجارة العامة والتوريدات:*\n\n• استيراد وتأمين المواد الإنشائية ومستلزمات البناء.\n• صفقات تجارية وسلاسل إمداد موثوقة للشركات والمشاريع.\n• أسعار تنافسية مطابقة للمواصفات القياسية المعتمدة.",
+            "4": "🚚 *قسم النقل العام والخدمات اللوجستية:*\n\n• نقل بري آمن للمواد والبضائع بين كافة المحافظات.\n• إدارة الأساطيل وتأمين المسارات اللوجستية.\n• التزام تام بالمواعيد وسرعة في التسليم.",
+            "5": "📞 *أرقام الهواتف وقنوات الاتصال المباشرة:*\n\n▫️ هاتف: 009647868006699\n▫️ هاتف: 009647737006699\n▫️ هاتف الإدارة: 07805509298\n▫️ البريد الإلكتروني: RTCo2025@gmail.com\n\nيسعدنا تواصلكم دائماً.",
+            "6": "🌐 *منصاتنا وموقعنا الرسمي:*\n\n• الموقع الإلكتروني: www.alburjmutalaliq.co\n• تيليجرام: https://t.me/RTCo2025\n• إنستغرام وتيك توك وفيسبوك: @rtco2025"
+        }
+
+        if lower_msg in dept_responses:
+            send_whatsapp_message(chat_id, dept_responses[lower_msg] + PERSISTENT_FOOTER)
+            return jsonify({"status": "dept sent"}), 200
+
+        # محادثة ذكية
+        is_first = len(user_conversations[chat_id]) == 0
+        user_conversations[chat_id].append({"role": "user", "content": text_message})
+        if len(user_conversations[chat_id]) > 8:
+            user_conversations[chat_id] = user_conversations[chat_id][-8:]
+
+        payload = [{"role": "system", "content": SYSTEM_INSTRUCTION}] + user_conversations[chat_id]
         ai_reply = generate_ai_reply(payload)
-        user_conversations[sender_whatsapp].append({"role": "assistant", "content": ai_reply})
+        user_conversations[chat_id].append({"role": "assistant", "content": ai_reply})
 
-        if is_first_interaction and any(w in lower_msg for w in ["سلام", "مرحبا", "هلو", "صباح", "مساء", "start"]):
-            reply_text = (
+        if is_first and any(w in lower_msg for w in ["سلام", "مرحبا", "هلو", "صباح", "مساء", "start"]):
+            final_reply = (
                 "يا أهلاً وسهلاً بحضرتك نورتنا في *شركة البرج المتألق* ✨\n"
                 "_(للمقاولات العامة • الاستثمارات العقارية • التجارة العامة • النقل العام)_\n\n"
                 + ai_reply + PERSISTENT_FOOTER
             )
         else:
-            reply_text = ai_reply + PERSISTENT_FOOTER
+            final_reply = ai_reply + PERSISTENT_FOOTER
 
-    # إرسال رد واتساب
-    twiml_resp = MessagingResponse()
-    twiml_resp.message(reply_text)
-    return str(twiml_resp)
+        send_whatsapp_message(chat_id, final_reply)
+
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
