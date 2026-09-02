@@ -1,39 +1,32 @@
 """
 منظومة السكرتيرة الذكية - شركة البرج المتألق
-المزود: Evolution API (غير مقيد ومجاني بالكامل)
+المزود: Evolution API
 """
 
 import os
 import re
 import time
 import threading
+import json
 import requests
 from flask import Flask, request, jsonify
 from groq import Groq
 
 app = Flask(__name__)
 
-# =============================================================
-# 1. مفاتيح الربط والإعدادات
-# =============================================================
+# الإعدادات
 GROQ_API_KEY = "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"
 EVOLUTION_API_URL = "https://rtco-evolution-api.onrender.com"
 INSTANCE_NAME = "RTCo"
 EVOLUTION_API_KEY = "Nawresnrshh@1096"
-
-# رقم هاتف الإدارة لاستلام التقارير والإشعارات (مع الرمز الدولي و @s.whatsapp.net)
 ADMIN_CHAT_ID = "9647805509298@s.whatsapp.net"
 
 client = Groq(api_key=GROQ_API_KEY)
 
-# هياكل الذاكرة والمؤقتات
-user_conversations = {}   # {chat_id: [{"role": ..., "content": ...}]}
-user_last_active = {}     # {chat_id: timestamp}
-user_meta = {}            # {chat_id: {"name": str, "phone": str}}
+user_conversations = {}
+user_last_active = {}
+user_meta = {}
 
-# =============================================================
-# 2. الهوية التوجيهية ونصوص الأقسام والاعتذار
-# =============================================================
 SYSTEM_INSTRUCTION = """
 أنتِ السكرتيرة التنفيذية والمستشارة الفنية لشركة "البرج المتألق للمقاولات العامة والاستثمارات العقارية والتجارة العامة والنقل العام".
 أسلوبكِ: أنثوي، لبق، راقٍ، ومهذب جداً بلهجة عراقية محترمة وبيئة أعمال راقية (مثل: "يا أهلاً وسهلاً بحضرتك"، "تدلل/تدللين"، "يسعدنا نخدمك").
@@ -71,29 +64,20 @@ def get_voice_apology_text(client_name: str, is_call: bool = True) -> str:
         + PERSISTENT_FOOTER
     )
 
-# =============================================================
-# 3. دوال التواصل مع Evolution API و Groq
-# =============================================================
 def send_whatsapp_message(chat_id: str, message: str):
     clean_id = chat_id.replace("@c.us", "").replace("@s.whatsapp.net", "")
     url = f"{EVOLUTION_API_URL}/message/sendText/{INSTANCE_NAME}"
     payload = {
         "number": clean_id,
-        "options": {
-            "delay": 1200,
-            "presence": "composing",
-            "linkPreview": False
-        },
-        "textMessage": {
-            "text": message
-        }
+        "text": message
     }
     headers = {
         "Content-Type": "application/json",
         "apikey": EVOLUTION_API_KEY
     }
     try:
-        requests.post(url, json=payload, headers=headers, timeout=10)
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"Send status: {res.status_code}, response: {res.text}")
     except Exception as e:
         print(f"Error sending message via Evolution API: {e}")
 
@@ -137,9 +121,6 @@ def generate_ai_reply(messages_payload):
             continue
     return "يا أهلاً بحضرتك، شلون أگدر أساعدك اليوم في شركة البرج المتألق؟"
 
-# =============================================================
-# 4. مراقبة الـ 15 دقيقة خمول وتوليد التقارير للإدارة
-# =============================================================
 def background_inactivity_checker():
     while True:
         time.sleep(30)
@@ -147,7 +128,7 @@ def background_inactivity_checker():
         timeout_chats = []
 
         for chat_id, last_time in list(user_last_active.items()):
-            if current_time - last_time >= 900:  # 15 دقيقة
+            if current_time - last_time >= 900:
                 timeout_chats.append(chat_id)
 
         for chat_id in timeout_chats:
@@ -166,15 +147,7 @@ def background_inactivity_checker():
                 sender = "الزبون" if msg["role"] == "user" else "السكرتيرة"
                 dialog_text += f"{sender}: {msg['content']}\n"
 
-            summary_prompt = f"""
-قم بتحليل محادثة خدمة العملاء التالية على واتساب لشركة 'البرج المتألق':
-{dialog_text}
-
-استخرج تقريراً رسمياً مختصراً جداً للإدارة:
-1. ماذا كان يحتاج الزبون بالتحديد؟ (الطلب الجوهري)
-2. كيف تمت إجابته والحل المقدم؟
-3. الإجراء المقترح للمتابعة (إن وجد).
-"""
+            summary_prompt = f"قم بتحليل محادثة خدمة العملاء التالية واستخرج تقريراً موجزاً:\n{dialog_text}"
             try:
                 models = get_available_models()
                 summary_res = client.chat.completions.create(
@@ -185,21 +158,21 @@ def background_inactivity_checker():
                 )
                 executive_summary = clean_think_tags(summary_res.choices[0].message.content)
             except Exception:
-                executive_summary = "تمت الجلسة بنجاح (يرجى مراجعة نص المحادثة المرفق أدناه)."
+                executive_summary = "تمت الجلسة بنجاح."
 
             clean_num = chat_id.split("@")[0]
             wa_link = f"https://wa.me/{clean_num}"
             client_name = meta.get("name", "زبون واتساب")
 
             admin_report = (
-                f"📊 *تقرير جلسة واتساب مكتملة (بعد 15 دقيقة خمول)*\n\n"
+                f"📊 *تقرير جلسة واتساب مكتملة*\n\n"
                 f"👤 *العميل:* {client_name}\n"
                 f"📱 *الرقم:* +{clean_num}\n\n"
-                f"📌 *الملخص الجوهري للمحادثة:*\n{executive_summary}\n\n"
+                f"📌 *الملخص:*\n{executive_summary}\n\n"
                 f"────────────────\n"
-                f"📝 *نص المحادثة بالكامل:*\n{dialog_text[:2500]}\n"
+                f"📝 *المحادثة:*\n{dialog_text[:2500]}\n"
                 f"────────────────\n"
-                f"👉 *مراسلة العميل مباشرة:*\n{wa_link}"
+                f"👉 *مراسلة العميل:* {wa_link}"
             )
 
             if clean_num not in ADMIN_CHAT_ID:
@@ -207,9 +180,6 @@ def background_inactivity_checker():
 
 threading.Thread(target=background_inactivity_checker, daemon=True).start()
 
-# =============================================================
-# 5. استقبال الأحداث والرسائل (Webhook)
-# =============================================================
 @app.route("/", methods=["GET"])
 def health():
     return "Evolution API Bot is Live 24/7", 200
@@ -217,119 +187,101 @@ def health():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
-    event = data.get("event", "")
+    print(f"\n--- NEW WEBHOOK EVENT: {data.get('event')} ---")
 
-    # 1) معالجة المكالمات الواردة
-    if "call" in str(event).lower():
-        call_data = data.get("data", {})
-        caller_id = call_data.get("from") or call_data.get("chatId", "")
-        caller_name = call_data.get("pushName") or "أستاذنا الفاضل"
+    event = str(data.get("event", "")).lower()
 
-        if caller_id and "@g.us" not in caller_id:
-            clean_num = caller_id.split("@")[0]
-            send_whatsapp_message(caller_id, get_voice_apology_text(caller_name, is_call=True))
+    # معالجة بيانات الرسائل القادمة
+    raw_data = data.get("data", {})
+    if isinstance(raw_data, list) and len(raw_data) > 0:
+        msg_payload = raw_data[0]
+    elif isinstance(raw_data, dict):
+        msg_payload = raw_data
+    else:
+        msg_payload = {}
 
-            if clean_num not in ADMIN_CHAT_ID:
-                admin_alert = (
-                    "🔔 *تنبيه: مكالمة صوتية واردة*\n\n"
-                    f"👤 *المتصل:* {caller_name}\n"
-                    f"📱 *الرقم:* +{clean_num}\n"
-                    "ℹ️ تم إرسال رسالة اعتذار آلية فوراً للمتصل بالأرقام المباشرة.\n\n"
-                    f"👉 *لمعاودة الاتصال:* https://wa.me/{clean_num}"
-                )
-                send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
-        return jsonify({"status": "call processed"}), 200
+    key = msg_payload.get("key", {})
+    from_me = key.get("fromMe", False)
 
-    # 2) معالجة الرسائل
-    if event == "messages.upsert":
-        msg_payload = data.get("data", {})
-        key = msg_payload.get("key", {})
-        from_me = key.get("fromMe", False)
+    if from_me:
+        print("Ignored: Message from me")
+        return jsonify({"status": "from_me ignored"}), 200
 
-        # تجاهل الرسائل المرسلة من حساب البوت نفسه
-        if from_me:
-            return jsonify({"status": "from_me ignored"}), 200
+    chat_id = key.get("remoteJid", "")
+    if not chat_id or "@g.us" in chat_id:
+        print(f"Ignored: Group or empty chat_id ({chat_id})")
+        return jsonify({"status": "group or empty ignored"}), 200
 
-        chat_id = key.get("remoteJid", "")
-        if "@g.us" in chat_id or not chat_id:
-            return jsonify({"status": "group ignored"}), 200
+    sender_name = msg_payload.get("pushName") or "أستاذنا الفاضل"
+    message_obj = msg_payload.get("message", {}) or {}
 
-        sender_name = msg_payload.get("pushName") or "أستاذنا الفاضل"
-        message_obj = msg_payload.get("message", {}) or {}
+    # فحص الرسائل الصوتية
+    if "audioMessage" in message_obj:
+        print(f"Audio received from {chat_id}")
+        clean_num = chat_id.split("@")[0]
+        send_whatsapp_message(chat_id, get_voice_apology_text(sender_name, is_call=False))
+        if clean_num not in ADMIN_CHAT_ID:
+            admin_alert = f"🎙️ *بصمة صوتية من:* {sender_name} (+{clean_num})\nhttps://wa.me/{clean_num}"
+            send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
+        return jsonify({"status": "audio handled"}), 200
 
-        # أ. معالجة الرسائل والبصمات الصوتية
-        if "audioMessage" in message_obj:
-            clean_num = chat_id.split("@")[0]
-            send_whatsapp_message(chat_id, get_voice_apology_text(sender_name, is_call=False))
+    # استخراج النص بجميع الصيغ المحتملة
+    text_message = (
+        message_obj.get("conversation")
+        or message_obj.get("extendedTextMessage", {}).get("text")
+        or ""
+    ).strip()
 
-            if clean_num not in ADMIN_CHAT_ID:
-                admin_alert = (
-                    "🎙️ *تنبيه: استلام رسالة / بصمة صوتية*\n\n"
-                    f"👤 *العميل:* {sender_name}\n"
-                    f"📱 *الرقم:* +{clean_num}\n"
-                    "ℹ️ تم إرسال اعتذار آلي يوضح أن الرقم مخصص للنصوص.\n\n"
-                    f"👉 *للاستماع والمراسلة:* https://wa.me/{clean_num}"
-                )
-                send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
-            return jsonify({"status": "audio handled"}), 200
+    print(f"Extracted message text: '{text_message}' from {sender_name} ({chat_id})")
 
-        # ب. استخراج النص
-        text_message = (
-            message_obj.get("conversation")
-            or message_obj.get("extendedTextMessage", {}).get("text")
-            or ""
-        ).strip()
+    if not text_message:
+        print("No text extracted, ignoring payload.")
+        return jsonify({"status": "no text"}), 200
 
-        if not text_message:
-            return jsonify({"status": "non-text ignored"}), 200
+    user_last_active[chat_id] = time.time()
+    user_meta[chat_id] = {"name": sender_name, "phone": chat_id}
 
-        user_last_active[chat_id] = time.time()
-        user_meta[chat_id] = {"name": sender_name, "phone": chat_id}
+    if chat_id not in user_conversations:
+        user_conversations[chat_id] = []
 
-        if chat_id not in user_conversations:
-            user_conversations[chat_id] = []
+    lower_msg = text_message.lower()
 
-        lower_msg = text_message.lower()
+    if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
+        send_whatsapp_message(chat_id, COMPANY_MENU_TEXT)
+        return jsonify({"status": "menu sent"}), 200
 
-        # فحص القوائم المباشرة
-        if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
-            send_whatsapp_message(chat_id, COMPANY_MENU_TEXT)
-            return jsonify({"status": "menu sent"}), 200
+    dept_responses = {
+        "1": "🏗️ *قسم المقاولات العامة والإنشاءات:*\n\n• تنفيذ الهياكل الإنشائية والخرسانية بدقة هندسية عالية.\n• تشطيبات متكاملة ديلوكس (تسليم مفتاح).\n• تصاميم معمارية وديكورات حديثة.\n• إشراف كادر هندسي معتمد وضمان شامل للجودة.\n\n💬 _تفضل بكتابة تفاصيل مشروعك أو مساحته وسأجيبك فوراً._",
+        "2": "🏢 *قسم الاستثمارات والتطوير العقاري:*\n\n• دراسات جدوى واستشارات عقارية استثمارية متخصصة.\n• فرص عقارية وأراضٍ ممتازة تحقق أعلى عائد استثماري.\n• إدارة وتطوير وتسويق المشاريع العقارية.",
+        "3": "📦 *قسم التجارة العامة والتوريدات:*\n\n• استيراد وتأمين المواد الإنشائية ومستلزمات البناء.\n• صفقات تجارية وسلاسل إمداد موثوقة للشركات والمشاريع.\n• أسعار تنافسية مطابقة للمواصفات القياسية المعتمدة.",
+        "4": "🚚 *قسم النقل العام والخدمات اللوجستية:*\n\n• نقل بري آمن للمواد والبضائع بين كافة المحافظات.\n• إدارة الأساطيل وتأمين المسارات اللوجستية.\n• التزام تام بالمواعيد وسرعة في التسليم.",
+        "5": "📞 *أرقام الهواتف وقنوات الاتصال المباشرة:*\n\n▫️ هاتف: 009647868006699\n▫️ هاتف: 009647737006699\n▫️ هاتف الإدارة: 07805509298\n▫️ البريد الإلكتروني: RTCo2025@gmail.com\n\nيسعدنا تواصلكم دائماً.",
+        "6": "🌐 *منصاتنا وموقعنا الرسمي:*\n\n• الموقع الإلكتروني: www.alburjmutalaliq.co\n• تيليجرام: https://t.me/RTCo2025\n• إنستغرام وتيك توك وفيسبوك: @rtco2025"
+    }
 
-        dept_responses = {
-            "1": "🏗️ *قسم المقاولات العامة والإنشاءات:*\n\n• تنفيذ الهياكل الإنشائية والخرسانية بدقة هندسية عالية.\n• تشطيبات متكاملة ديلوكس (تسليم مفتاح).\n• تصاميم معمارية وديكورات حديثة.\n• إشراف كادر هندسي معتمد وضمان شامل للجودة.\n\n💬 _تفضل بكتابة تفاصيل مشروعك أو مساحته وسأجيبك فوراً._",
-            "2": "🏢 *قسم الاستثمارات والتطوير العقاري:*\n\n• دراسات جدوى واستشارات عقارية استثمارية متخصصة.\n• فرص عقارية وأراضٍ ممتازة تحقق أعلى عائد استثماري.\n• إدارة وتطوير وتسويق المشاريع العقارية.",
-            "3": "📦 *قسم التجارة العامة والتوريدات:*\n\n• استيراد وتأمين المواد الإنشائية ومستلزمات البناء.\n• صفقات تجارية وسلاسل إمداد موثوقة للشركات والمشاريع.\n• أسعار تنافسية مطابقة للمواصفات القياسية المعتمدة.",
-            "4": "🚚 *قسم النقل العام والخدمات اللوجستية:*\n\n• نقل بري آمن للمواد والبضائع بين كافة المحافظات.\n• إدارة الأساطيل وتأمين المسارات اللوجستية.\n• التزام تام بالمواعيد وسرعة في التسليم.",
-            "5": "📞 *أرقام الهواتف وقنوات الاتصال المباشرة:*\n\n▫️ هاتف: 009647868006699\n▫️ هاتف: 009647737006699\n▫️ هاتف الإدارة: 07805509298\n▫️ البريد الإلكتروني: RTCo2025@gmail.com\n\nيسعدنا تواصلكم دائماً.",
-            "6": "🌐 *منصاتنا وموقعنا الرسمي:*\n\n• الموقع الإلكتروني: www.alburjmutalaliq.co\n• تيليجرام: https://t.me/RTCo2025\n• إنستغرام وتيك توك وفيسبوك: @rtco2025"
-        }
+    if lower_msg in dept_responses:
+        send_whatsapp_message(chat_id, dept_responses[lower_msg] + PERSISTENT_FOOTER)
+        return jsonify({"status": "dept sent"}), 200
 
-        if lower_msg in dept_responses:
-            send_whatsapp_message(chat_id, dept_responses[lower_msg] + PERSISTENT_FOOTER)
-            return jsonify({"status": "dept sent"}), 200
+    is_first = len(user_conversations[chat_id]) == 0
+    user_conversations[chat_id].append({"role": "user", "content": text_message})
+    if len(user_conversations[chat_id]) > 8:
+        user_conversations[chat_id] = user_conversations[chat_id][-8:]
 
-        # المعالجة الذكية
-        is_first = len(user_conversations[chat_id]) == 0
-        user_conversations[chat_id].append({"role": "user", "content": text_message})
-        if len(user_conversations[chat_id]) > 8:
-            user_conversations[chat_id] = user_conversations[chat_id][-8:]
+    payload_groq = [{"role": "system", "content": SYSTEM_INSTRUCTION}] + user_conversations[chat_id]
+    ai_reply = generate_ai_reply(payload_groq)
+    user_conversations[chat_id].append({"role": "assistant", "content": ai_reply})
 
-        payload = [{"role": "system", "content": SYSTEM_INSTRUCTION}] + user_conversations[chat_id]
-        ai_reply = generate_ai_reply(payload)
-        user_conversations[chat_id].append({"role": "assistant", "content": ai_reply})
+    if is_first and any(w in lower_msg for w in ["سلام", "مرحبا", "هلو", "صباح", "مساء", "start"]):
+        final_reply = (
+            "يا أهلاً وسهلاً بحضرتك نورتنا في *شركة البرج المتألق* ✨\n"
+            "_(للمقاولات العامة • الاستثمارات العقارية • التجارة العامة • النقل العام)_\n\n"
+            + ai_reply + PERSISTENT_FOOTER
+        )
+    else:
+        final_reply = ai_reply + PERSISTENT_FOOTER
 
-        if is_first and any(w in lower_msg for w in ["سلام", "مرحبا", "هلو", "صباح", "مساء", "start"]):
-            final_reply = (
-                "يا أهلاً وسهلاً بحضرتك نورتنا في *شركة البرج المتألق* ✨\n"
-                "_(للمقاولات العامة • الاستثمارات العقارية • التجارة العامة • النقل العام)_\n\n"
-                + ai_reply + PERSISTENT_FOOTER
-            )
-        else:
-            final_reply = ai_reply + PERSISTENT_FOOTER
-
-        send_whatsapp_message(chat_id, final_reply)
-
+    send_whatsapp_message(chat_id, final_reply)
     return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
