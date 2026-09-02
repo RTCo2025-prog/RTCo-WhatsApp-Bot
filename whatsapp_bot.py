@@ -1,13 +1,6 @@
 """
-نظام السكرتيرة الذكية على واتساب - شركة البرج المتألق
-المزود: Green-API
-الميزات الشاملة:
-- رد فوري ذكي على الاستفسارات النصية بلهجة عراقية راقية وذاكرة سياق.
-- معالجة واعتذار فوري للمكالمات الصوتية الواردة/الفائتة بكافة صيغ الـ Webhook.
-- رد فوري واعتذار عند استلام أي بصمة أو رسالة صوتية (Voice Note).
-- إشعار فوري لهاتف الإدارة عند وجود مكالمة أو رسالة صوتية.
-- قائمة أقسام الشركة ومعلومات التواصل عبر الأرقام (0 إلى 6).
-- تقرير إداري ملخص بعد 15 دقيقة خمول يرسل للإدارة مع رابط المحادثة المباشر.
+منظومة السكرتيرة الذكية - شركة البرج المتألق
+المزود: Evolution API (غير مقيد ومجاني بالكامل)
 """
 
 import os
@@ -24,14 +17,14 @@ app = Flask(__name__)
 # 1. مفاتيح الربط والإعدادات
 # =============================================================
 GROQ_API_KEY = "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"
-ID_INSTANCE = "710522726783"
-API_TOKEN_INSTANCE = "89eb56761417424194ea3f426398d1e4f6d708a5d22e4e46b7"
+EVOLUTION_API_URL = "https://rtco-evolution-api.onrender.com"
+INSTANCE_NAME = "RTCo"
+EVOLUTION_API_KEY = "Nawresnrshh@1096"
 
-# رقم هاتف الإدارة لاستلام التقارير والإشعارات (مع الرمز الدولي و @c.us)
-ADMIN_CHAT_ID = "9647805509298@c.us"
+# رقم هاتف الإدارة لاستلام التقارير والإشعارات (مع الرمز الدولي و @s.whatsapp.net)
+ADMIN_CHAT_ID = "9647805509298@s.whatsapp.net"
 
 client = Groq(api_key=GROQ_API_KEY)
-GREEN_API_URL = f"https://api.green-api.com/waInstance{ID_INSTANCE}"
 
 # هياكل الذاكرة والمؤقتات
 user_conversations = {}   # {chat_id: [{"role": ..., "content": ...}]}
@@ -74,23 +67,35 @@ def get_voice_apology_text(client_name: str, is_call: bool = True) -> str:
         "☎️ أو يمكنك الاتصال هاتفياً ومباشرة بكادر الشركة عبر الأرقام التالية:\n"
         "▫️ 009647868006699\n"
         "▫️ 009647737006699\n"
+        "▫️ هاتف الإدارة: 07805509298"
         + PERSISTENT_FOOTER
     )
 
 # =============================================================
-# 3. دوال التواصل مع Green-API و Groq
+# 3. دوال التواصل مع Evolution API و Groq
 # =============================================================
 def send_whatsapp_message(chat_id: str, message: str):
-    url = f"{GREEN_API_URL}/sendMessage/{API_TOKEN_INSTANCE}"
+    clean_id = chat_id.replace("@c.us", "").replace("@s.whatsapp.net", "")
+    url = f"{EVOLUTION_API_URL}/message/sendText/{INSTANCE_NAME}"
     payload = {
-        "chatId": chat_id,
-        "message": message
+        "number": clean_id,
+        "options": {
+            "delay": 1200,
+            "presence": "composing",
+            "linkPreview": False
+        },
+        "textMessage": {
+            "text": message
+        }
     }
-    headers = {'Content-Type': 'application/json'}
+    headers = {
+        "Content-Type": "application/json",
+        "apikey": EVOLUTION_API_KEY
+    }
     try:
         requests.post(url, json=payload, headers=headers, timeout=10)
     except Exception as e:
-        print(f"Error sending WhatsApp message: {e}")
+        print(f"Error sending message via Evolution API: {e}")
 
 def clean_think_tags(text: str) -> str:
     if not text:
@@ -197,95 +202,83 @@ def background_inactivity_checker():
                 f"👉 *مراسلة العميل مباشرة:*\n{wa_link}"
             )
 
-            if chat_id != ADMIN_CHAT_ID:
+            if clean_num not in ADMIN_CHAT_ID:
                 send_whatsapp_message(ADMIN_CHAT_ID, admin_report)
 
 threading.Thread(target=background_inactivity_checker, daemon=True).start()
 
 # =============================================================
-# 5. السيرفر واستقبال الرسائل والأحداث (Webhook)
+# 5. استقبال الأحداث والرسائل (Webhook)
 # =============================================================
 @app.route("/", methods=["GET"])
 def health():
-    return "RTCo WhatsApp Bot is Live 24/7", 200
+    return "Evolution API Bot is Live 24/7", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json or {}
-    type_webhook = str(data.get("typeWebhook", ""))
+    event = data.get("event", "")
 
-    # -------------------------------------------------------------
-    # أ) معالجة المكالمات الواردة والفائتة بجميع هياكلها المحتملة
-    # -------------------------------------------------------------
-    if "call" in type_webhook.lower():
-        sender_data = data.get("senderData", {}) or {}
-        chat_id = sender_data.get("chatId") or data.get("chatId", "")
-        caller_name = sender_data.get("senderName") or "أستاذنا الفاضل"
+    # 1) معالجة المكالمات الواردة
+    if "call" in str(event).lower():
+        call_data = data.get("data", {})
+        caller_id = call_data.get("from") or call_data.get("chatId", "")
+        caller_name = call_data.get("pushName") or "أستاذنا الفاضل"
 
-        if not chat_id and "from" in data:
-            chat_id = data.get("from")
+        if caller_id and "@g.us" not in caller_id:
+            clean_num = caller_id.split("@")[0]
+            send_whatsapp_message(caller_id, get_voice_apology_text(caller_name, is_call=True))
 
-        if chat_id and "@g.us" not in str(chat_id):
-            clean_num = str(chat_id).split("@")[0]
-
-            # 1. إرسال الاعتذار التلقائي للمتصل
-            reply_call = get_voice_apology_text(caller_name, is_call=True)
-            send_whatsapp_message(chat_id, reply_call)
-
-            # 2. إشعار فوري لإدارة الشركة بوجود مكالمة
-            if chat_id != ADMIN_CHAT_ID:
+            if clean_num not in ADMIN_CHAT_ID:
                 admin_alert = (
-                    "🔔 *تنبيه: مكالمة صوتية واردة لم يُرد عليها*\n\n"
+                    "🔔 *تنبيه: مكالمة صوتية واردة*\n\n"
                     f"👤 *المتصل:* {caller_name}\n"
                     f"📱 *الرقم:* +{clean_num}\n"
-                    "ℹ️ تم إرسال رسالة توضيحية آلية فوراً للمتصل مع أرقام الهواتف الرسمية.\n\n"
-                    f"👉 *لمعاودة الاتصال بالعميل أو مراسلته:*\nhttps://wa.me/{clean_num}"
+                    "ℹ️ تم إرسال رسالة اعتذار آلية فوراً للمتصل بالأرقام المباشرة.\n\n"
+                    f"👉 *لمعاودة الاتصال:* https://wa.me/{clean_num}"
                 )
                 send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
-
         return jsonify({"status": "call processed"}), 200
 
-    # -------------------------------------------------------------
-    # ب) معالجة الرسائل الواردة (النصية والصوتية)
-    # -------------------------------------------------------------
-    if type_webhook == "incomingMessageReceived":
-        message_data = data.get("messageData", {}) or {}
-        type_message = message_data.get("typeMessage")
-        sender_data = data.get("senderData", {}) or {}
-        
-        chat_id = sender_data.get("chatId", "")
-        sender_name = sender_data.get("senderName", "أستاذنا الفاضل")
+    # 2) معالجة الرسائل
+    if event == "messages.upsert":
+        msg_payload = data.get("data", {})
+        key = msg_payload.get("key", {})
+        from_me = key.get("fromMe", False)
 
-        if "@g.us" in str(chat_id) or not chat_id:
-            return jsonify({"status": "ignored"}), 200
+        # تجاهل الرسائل المرسلة من حساب البوت نفسه
+        if from_me:
+            return jsonify({"status": "from_me ignored"}), 200
 
-        # 1. التعامل مع البصمات والرسائل الصوتية الواردة
-        if type_message in ["audioMessage", "voiceMessage"]:
-            clean_num = str(chat_id).split("@")[0]
-            
-            # إرسال الاعتذار الآلي للبصمة الصوتية
-            reply_audio = get_voice_apology_text(sender_name, is_call=False)
-            send_whatsapp_message(chat_id, reply_audio)
+        chat_id = key.get("remoteJid", "")
+        if "@g.us" in chat_id or not chat_id:
+            return jsonify({"status": "group ignored"}), 200
 
-            # إشعار الإدارة بوجود بصمة صوتية
-            if chat_id != ADMIN_CHAT_ID:
+        sender_name = msg_payload.get("pushName") or "أستاذنا الفاضل"
+        message_obj = msg_payload.get("message", {}) or {}
+
+        # أ. معالجة الرسائل والبصمات الصوتية
+        if "audioMessage" in message_obj:
+            clean_num = chat_id.split("@")[0]
+            send_whatsapp_message(chat_id, get_voice_apology_text(sender_name, is_call=False))
+
+            if clean_num not in ADMIN_CHAT_ID:
                 admin_alert = (
                     "🎙️ *تنبيه: استلام رسالة / بصمة صوتية*\n\n"
                     f"👤 *العميل:* {sender_name}\n"
                     f"📱 *الرقم:* +{clean_num}\n"
-                    "ℹ️ تم إرسال اعتذار آلي يوضح أن الرقم مخصص للنصوص ودعوته للكتابة أو الاتصال.\n\n"
-                    f"👉 *للاستماع للبصمة والرد عليه:* https://wa.me/{clean_num}"
+                    "ℹ️ تم إرسال اعتذار آلي يوضح أن الرقم مخصص للنصوص.\n\n"
+                    f"👉 *للاستماع والمراسلة:* https://wa.me/{clean_num}"
                 )
                 send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
+            return jsonify({"status": "audio handled"}), 200
 
-            return jsonify({"status": "voice note handled"}), 200
-
-        # 2. استخراج الرسائل النصية
-        text_message = ""
-        if type_message == "textMessage":
-            text_message = message_data.get("textMessageData", {}).get("textMessage", "").strip()
-        elif type_message == "extendedTextMessage":
-            text_message = message_data.get("extendedTextMessageData", {}).get("text", "").strip()
+        # ب. استخراج النص
+        text_message = (
+            message_obj.get("conversation")
+            or message_obj.get("extendedTextMessage", {}).get("text")
+            or ""
+        ).strip()
 
         if not text_message:
             return jsonify({"status": "non-text ignored"}), 200
@@ -298,7 +291,7 @@ def webhook():
 
         lower_msg = text_message.lower()
 
-        # فحص القوائم المباشرة (0 أو الأقسام)
+        # فحص القوائم المباشرة
         if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
             send_whatsapp_message(chat_id, COMPANY_MENU_TEXT)
             return jsonify({"status": "menu sent"}), 200
@@ -316,7 +309,7 @@ def webhook():
             send_whatsapp_message(chat_id, dept_responses[lower_msg] + PERSISTENT_FOOTER)
             return jsonify({"status": "dept sent"}), 200
 
-        # المعالجة عبر الذكاء الاصطناعي مع حفظ السياق
+        # المعالجة الذكية
         is_first = len(user_conversations[chat_id]) == 0
         user_conversations[chat_id].append({"role": "user", "content": text_message})
         if len(user_conversations[chat_id]) > 8:
