@@ -18,7 +18,7 @@ app = Flask(__name__)
 # =============================================================
 # 1. المفاتيح وإعدادات الاتصال
 # =============================================================
-GROQ_API_KEY = "gsk_ضع_مفتاح_جروك_الجديد_هنا".strip()
+GROQ_API_KEY = "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".strip()
 
 # بيانات حساب Twilio الخاص بك
 TWILIO_ACCOUNT_SID = "AC_ضع_account_sid_هنا"
