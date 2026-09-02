@@ -1,11 +1,12 @@
 """
 نظام السكرتيرة الذكية على واتساب - شركة البرج المتألق
 المزود: Green-API
-الميزات:
-- حوار ذكي مباشر بلهجة عراقية راقية مع ذاكرة سياق.
-- قائمة أقسام ومعلومات اتصال بديهية (بالضغط على 0 أو الأرقام 1-6).
-- ذيل توجيهي في كل رسالة لعرض الأقسام.
-- تقرير إداري ملخص بعد 15 دقيقة خمول يرسل لواتساب الإدارة مع رابط المحادثة.
+الميزات الشاملة:
+- رد فوري ذكي على الاستفسارات النصية بلهجة عراقية راقية.
+- رد تلقائي واعتذار عند ورود أي مكالمة صوتية أو بصمة صوتية (Voice Note).
+- إشعار فوري لهاتف الإدارة عند وجود مكالمة أو رسالة صوتية.
+- قائمة أقسام الشركة ومعلومات التواصل عبر الأرقام (0 إلى 6).
+- تقرير إداري ملخص بعد 15 دقيقة خمول يرسل للإدارة مع رابط المحادثة.
 """
 
 import os
@@ -25,11 +26,10 @@ GROQ_API_KEY = "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"
 ID_INSTANCE = "710522726783"
 API_TOKEN_INSTANCE = "89eb56761417424194ea3f426398d1e4f6d708a5d22e4e46b7"
 
-# رقم هاتف الإدارة لاستلام التقارير (بالصيغة الدولية مع @c.us)
+# رقم هاتف الإدارة لاستلام التقارير والإشعارات
 ADMIN_CHAT_ID = "9647805509298@c.us"
 
 client = Groq(api_key=GROQ_API_KEY)
-
 GREEN_API_URL = f"https://api.green-api.com/waInstance{ID_INSTANCE}"
 
 # هياكل الذاكرة والمؤقتات
@@ -38,7 +38,7 @@ user_last_active = {}     # {chat_id: timestamp}
 user_meta = {}            # {chat_id: {"name": str, "phone": str}}
 
 # =============================================================
-# 2. الهوية التوجيهية ونصوص الأقسام
+# 2. الهوية التوجيهية ونصوص الأقسام والاعتذار
 # =============================================================
 SYSTEM_INSTRUCTION = """
 أنتِ السكرتيرة التنفيذية والمستشارة الفنية لشركة "البرج المتألق للمقاولات العامة والاستثمارات العقارية والتجارة العامة والنقل العام".
@@ -63,6 +63,19 @@ COMPANY_MENU_TEXT = (
 )
 
 PERSISTENT_FOOTER = "\n\n─────────────\n📋 _لعرض أقسام الشركة ومعلومات التواصل، أرسل رقم *0*_"
+
+def get_voice_apology_text(client_name: str, is_call: bool = True) -> str:
+    media_type = "المكالمات الصوتية" if is_call else "الرسائل والبصمات الصوتية"
+    return (
+        f"يا أهلاً وسهلاً بحضرتك {client_name} نورتنا في *شركة البرج المتألق* ✨\n\n"
+        f"📞 نعتذر من حضرتك، هذا الرقم مخصص لمنظومة السكرتارية والمراسلات النصية الآلية، ولا يمكن استلام أو معالجة {media_type} عبره.\n\n"
+        "💬 *يسعدنا جداً خدمتك:* تفضل بكتابة استفسارك أو طلبك هنا *برسالة نصية* وسأجيبك بكل سرور وفوراً.\n\n"
+        "☎️ أو يمكنك الاتصال هاتفياً ومباشرة بكادر الشركة عبر الأرقام التالية:\n"
+        "▫️ 009647868006699\n"
+        "▫️ 009647737006699\n"
+        "▫️ هاتف الإدارة: 07805509298"
+        + PERSISTENT_FOOTER
+    )
 
 # =============================================================
 # 3. دوال التواصل مع Green-API و Groq
@@ -129,7 +142,7 @@ def background_inactivity_checker():
         timeout_chats = []
 
         for chat_id, last_time in list(user_last_active.items()):
-            if current_time - last_time >= 900:  # 15 دقيقة خمول
+            if current_time - last_time >= 900:  # 15 دقيقة
                 timeout_chats.append(chat_id)
 
         for chat_id in timeout_chats:
@@ -190,7 +203,7 @@ def background_inactivity_checker():
 threading.Thread(target=background_inactivity_checker, daemon=True).start()
 
 # =============================================================
-# 5. السيرفر واستقبال الرسائل (Webhook)
+# 5. السيرفر واستقبال الرسائل والأحداث (Webhook)
 # =============================================================
 @app.route("/", methods=["GET"])
 def health():
@@ -201,19 +214,70 @@ def webhook():
     data = request.json or {}
     type_webhook = data.get("typeWebhook")
 
-    # معالجة الرسائل الواردة فقط
+    # -------------------------------------------------------------
+    # أ) التعامل مع المكالمات الواردة (Incoming Calls)
+    # -------------------------------------------------------------
+    if type_webhook == "incomingCall":
+        sender_data = data.get("senderData", {})
+        chat_id = sender_data.get("chatId", "")
+        caller_name = sender_data.get("senderName", "أستاذنا الفاضل")
+
+        if chat_id and "@g.us" not in chat_id:
+            clean_num = chat_id.split("@")[0]
+
+            # 1. إرسال الاعتذار التلقائي للمتصل
+            reply_call = get_voice_apology_text(caller_name, is_call=True)
+            send_whatsapp_message(chat_id, reply_call)
+
+            # 2. إشعار فوري لإدارة الشركة
+            if chat_id != ADMIN_CHAT_ID:
+                admin_alert = (
+                    "🔔 *تنبيه: مكالمة صوتية واردة*\n\n"
+                    f"👤 *المتصل:* {caller_name}\n"
+                    f"📱 *الرقم:* +{clean_num}\n"
+                    "ℹ️ تم إرسال رسالة توضيحية آلية فوراً للمتصل مع أرقام الهواتف الرسمية.\n\n"
+                    f"👉 *لمعاودة الاتصال بالعميل أو مراسلته:*\nhttps://wa.me/{clean_num}"
+                )
+                send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
+
+        return jsonify({"status": "call handled"}), 200
+
+    # -------------------------------------------------------------
+    # ب) التعامل مع الرسائل الواردة (النصية والصوتية)
+    # -------------------------------------------------------------
     if type_webhook == "incomingMessageReceived":
         message_data = data.get("messageData", {})
         type_message = message_data.get("typeMessage")
         sender_data = data.get("senderData", {})
         
         chat_id = sender_data.get("chatId", "")
-        sender_name = sender_data.get("senderName", "زبون")
+        sender_name = sender_data.get("senderName", "أستاذنا الفاضل")
 
-        # تجنب معالجة رسائل المجموعات أو إشعارات النظام
         if "@g.us" in chat_id or not chat_id:
             return jsonify({"status": "ignored"}), 200
 
+        # --- التعامل مع البصمات والرسائل الصوتية الواردة ---
+        if type_message in ["audioMessage", "voiceMessage"]:
+            clean_num = chat_id.split("@")[0]
+            
+            # 1. إرسال رسالة الاعتذار التلقائية للبصمة الصوتية
+            reply_audio = get_voice_apology_text(sender_name, is_call=False)
+            send_whatsapp_message(chat_id, reply_audio)
+
+            # 2. إشعار الإدارة بوجود رسالة صوتية من عميل
+            if chat_id != ADMIN_CHAT_ID:
+                admin_alert = (
+                    "🎙️ *تنبيه: استلام رسالة / بصمة صوتية*\n\n"
+                    f"👤 *العميل:* {sender_name}\n"
+                    f"📱 *الرقم:* +{clean_num}\n"
+                    "ℹ️ تم إرسال اعتذار آلي يوضح أن الرقم مخصص للنصوص ودعوته للكتابة أو الاتصال.\n\n"
+                    f"👉 *للاستماع للبصمة والرد عليه:* https://wa.me/{clean_num}"
+                )
+                send_whatsapp_message(ADMIN_CHAT_ID, admin_alert)
+
+            return jsonify({"status": "voice note handled"}), 200
+
+        # --- استخراج الرسائل النصية ---
         text_message = ""
         if type_message == "textMessage":
             text_message = message_data.get("textMessageData", {}).get("textMessage", "").strip()
@@ -221,9 +285,8 @@ def webhook():
             text_message = message_data.get("extendedTextMessageData", {}).get("text", "").strip()
 
         if not text_message:
-            return jsonify({"status": "no text"}), 200
+            return jsonify({"status": "non-text ignored"}), 200
 
-        # تحديث وقت النشاط والبيانات
         user_last_active[chat_id] = time.time()
         user_meta[chat_id] = {"name": sender_name, "phone": chat_id}
 
@@ -232,7 +295,7 @@ def webhook():
 
         lower_msg = text_message.lower()
 
-        # فحص القوائم
+        # فحص القوائم المباشرة (0)
         if lower_msg in ["0", "الاقسام", "الأقسام", "القائمة", "قائمة", "menu"]:
             send_whatsapp_message(chat_id, COMPANY_MENU_TEXT)
             return jsonify({"status": "menu sent"}), 200
@@ -250,7 +313,7 @@ def webhook():
             send_whatsapp_message(chat_id, dept_responses[lower_msg] + PERSISTENT_FOOTER)
             return jsonify({"status": "dept sent"}), 200
 
-        # محادثة ذكية
+        # معالجة الذكاء الاصطناعي
         is_first = len(user_conversations[chat_id]) == 0
         user_conversations[chat_id].append({"role": "user", "content": text_message})
         if len(user_conversations[chat_id]) > 8:
